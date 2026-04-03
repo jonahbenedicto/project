@@ -1,0 +1,9 @@
+{
+  "name": "<NAME>",
+  "description": "<DESCRIPTION>",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://<CHROMIUM_EXTENSION_ID>/"
+  ],
+  "path": "<PATH>"
+}

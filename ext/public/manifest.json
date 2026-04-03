@@ -1,0 +1,19 @@
+{
+  "name": "ext",
+  "version": "0.1",
+  "manifest_version": 3,
+  "description": "Extension",
+  "permissions": [
+    "nativeMessaging",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Extension"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}

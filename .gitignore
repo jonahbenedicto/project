@@ -1,0 +1,9 @@
+*.DS_Store
+ext/node_modules
+ext/dist
+host/linux
+host/mac
+host/windows
+web/node_modules
+web/dist
+api/venv
