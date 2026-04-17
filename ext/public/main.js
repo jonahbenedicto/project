@@ -51,35 +51,89 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     })
 })
 
-chrome.debugger.onEvent.addListener(async (_, message, params) => {
+function matchesDomain(domain, pattern) {
+    const domainLower = domain.toLowerCase()
+    const patternLower = pattern.toLowerCase()
+
+    if (patternLower === domainLower) {
+        return true
+    }
+
+    if (patternLower.startsWith("*.")) {
+        const suffix = patternLower.slice(1)
+
+        if (domainLower.endsWith(suffix)) {
+            const prefix = domainLower.slice(0, domainLower.length - suffix.length)
+
+            return prefix.length > 0 && !prefix.includes(".")
+        }
+    }
+
+    return false
+}
+
+function complianceCheck(certificate, policy) {
+    return {
+        hasValidProtocol: policy.validProtocols.length === 0 || policy.validProtocols.includes(certificate.protocol),
+        hasValidKeyExchange: policy.validKeyExchanges.length === 0 || policy.validKeyExchanges.includes(certificate.keyExchange),
+        hasValidKeyExchangeGroup: policy.validKeyExchangeGroups.length === 0 || policy.validKeyExchangeGroups.includes(certificate.keyExchangeGroup),
+        hasValidCipher: policy.validCiphers.length === 0 || policy.validCiphers.includes(certificate.cipher),
+        hasValidMac: policy.validMacs.length === 0 || policy.validMacs.includes(certificate.mac),
+        hasValidDomain: policy.validDomains.some(pattern => matchesDomain(certificate.subjectName, pattern) || certificate.sanList.some(san => matchesDomain(san, pattern))),
+        hasValidIssuer: policy.validIssuers.length === 0 || policy.validIssuers.includes(certificate.issuer),
+        hasValidDaysUntilExpiration: (new Date(certificate.validTo) - new Date()) / (1000 * 60 * 60 * 24) >= policy.minDaysUntilExpiration,
+        hasValidDaysSinceIssuance: (new Date() - new Date(certificate.validFrom)) / (1000 * 60 * 60 * 24) <= policy.maxDaysSinceIssuance,
+        hasValidSignedCertificateTimestampList: (certificate.signedCertificateTimestampList && certificate.signedCertificateTimestampList.length > 0) === policy.requireSignedCertificateTimestampList,
+        hasValidCertificateTransparencyCompliance: certificate.certificateTransparencyCompliance === policy.requireCertificateTransparencyCompliance,
+        hasValidEncryptedClientHello: certificate.encryptedClientHello === policy.requireEncryptedClientHello,
+    }
+}
+
+chrome.debugger.onEvent.addListener(async (debuggeeId, message, params) =>{
     if (message !== "Network.responseReceived") {
-        return;
+        return
     }
     if (!params) {
-        return;
+        return
     }
     if (!params.response) {
-        return;
+        return
     }
     if (!params.response.securityDetails) {
-        return;
+        return
     }
     if (!params.response.url) {
-        return;
+        return
     }
     if (!params.response.url.startsWith("http")) {
-        return;
+        return
     }
     const securityDetails = params.response.securityDetails
-    const url = new URL(params.response.url)
-    const hostname = url.hostname
+
+    const policy = {
+        validProtocols: ["QUIC", "TLS 1.3"],
+        validKeyExchanges: [],
+        validKeyExchangeGroups: ["X25519MLKEM768"],
+        validCiphers: ["AES_128_GCM"],
+        validMacs: [],
+        validDomains: ["google.com"],
+        validIssuers: ["WR2"],
+        minDaysUntilExpiration: 30,
+        maxDaysSinceIssuance: 365,
+        requireSignedCertificateTimestampList: true,
+        requireCertificateTransparencyCompliance: true,
+        requireEncryptedClientHello: true,
+    }
+
+    // Get validDomains from server side
+    const validDomains = policy.validDomains
+
     const certificate = {
         protocol: securityDetails.protocol,
         keyExchange: securityDetails.keyExchange,
         keyExchangeGroup: securityDetails.keyExchangeGroup,
         cipher: securityDetails.cipher,
         mac: securityDetails.mac,
-        certificateId: securityDetails.certificateId,
         subjectName: securityDetails.subjectName,
         sanList: securityDetails.sanList,
         issuer: securityDetails.issuer,
@@ -87,8 +141,15 @@ chrome.debugger.onEvent.addListener(async (_, message, params) => {
         validTo: new Date(securityDetails.validTo * 1000).toISOString(),
         signedCertificateTimestampList: securityDetails.signedCertificateTimestampList,
         certificateTransparencyCompliance: securityDetails.certificateTransparencyCompliance,
-        serverSignatureAlgorithm: securityDetails.serverSignatureAlgorithm,
         encryptedClientHello: securityDetails.encryptedClientHello,
     }
-    console.log(hostname, certificate)
+
+    const hasValidDomain = validDomains.some(pattern => matchesDomain(certificate.subjectName, pattern) || certificate.sanList.some(san => matchesDomain(san, pattern)))
+
+    if (hasValidDomain) {
+        console.log(certificate)
+    }
+
+    // Move compliance check to server side
+    const compliance = complianceCheck(certificate, policy)
 })
