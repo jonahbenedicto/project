@@ -13,6 +13,9 @@
     "default_path": "index.html"
   },
   "permissions": [
-    "sidePanel"
+    "sidePanel",
+    "debugger",
+    "tabs",
+    "activeTab"
   ]
 }
