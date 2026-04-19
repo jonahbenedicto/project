@@ -8,8 +8,10 @@ import enum
 from flask_smorest import Api, Blueprint, abort
 from marshmallow import Schema, fields, validate
 from werkzeug.security import generate_password_hash, check_password_hash
+from flask_cors import CORS
  
 app = Flask(__name__)
+CORS(app)
  
 db_url = os.environ.get("DATABASE_URL", "postgresql://devuser:devpassword@localhost:5432/devdatabase")
 if db_url.startswith("postgres://"):
@@ -244,56 +246,56 @@ class Policy(db.Model):
 authentication_blp = Blueprint(
     "authentication",
     __name__,
-    url_prefix="/authentication",
+    url_prefix="/api/authentication",
     description="Authentication",
 )
  
 user_blp = Blueprint(
     "user",
     __name__,
-    url_prefix="/user",
+    url_prefix="/api/user",
     description="User",
 )
  
 consent_blp = Blueprint(
     "consent",
     __name__,
-    url_prefix="/consent",
+    url_prefix="/api/consent",
     description="Consent",
 )
  
 organisation_blp = Blueprint(
     "organisation",
     __name__,
-    url_prefix="/organisation",
+    url_prefix="/api/organisation",
     description="Organisation",
 )
  
 invite_blp = Blueprint(
     "invite",
     __name__,
-    url_prefix="/invite",
+    url_prefix="/api/invite",
     description="Invite",
 )
  
 policy_blp = Blueprint(
     "policy",
     __name__,
-    url_prefix="/policy",
+    url_prefix="/api/policy",
     description="Policy",
 )
  
 certificate_blp = Blueprint(
     "certificate",
     __name__,
-    url_prefix="/certificate",
+    url_prefix="/api/certificate",
     description="Certificate",
 )
  
 compliance_blp = Blueprint(
     "compliance",
     __name__,
-    url_prefix="/compliance",
+    url_prefix="/api/compliance",
     description="Compliance",
 )
  
