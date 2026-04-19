@@ -8,5 +8,5 @@ export const setStoredAccessToken = async (accessToken: string | null): Promise<
 };
 
 export const clearStorage = async (): Promise<void> => {
-  await chrome.storage.local.remove(["accessToken", "authUser"]);
+  await chrome.storage.local.remove(["accessToken"]);
 };
