@@ -1,12 +1,13 @@
 from flask import Flask
 import os
 from flask_sqlalchemy import SQLAlchemy
-from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, create_access_token
 from sqlalchemy.dialects.postgresql import ARRAY as Array
 from datetime import datetime, timezone, timedelta
 import enum
-from flask_smorest import Api, Blueprint
+from flask_smorest import Api, Blueprint, abort
 from marshmallow import Schema, fields, validate
+from werkzeug.security import generate_password_hash, check_password_hash
  
 app = Flask(__name__)
  
@@ -646,24 +647,58 @@ _validation_err = {"description": "Validation error", "content": {"application/j
 @authentication_blp.response(201, AccessTokenResponseSchema)
 @authentication_blp.doc(summary="Sign up", description="Sign up for an account.", responses={"409": _err("Username or email already registered"), "422": _validation_err})
 def sign_up(body):
-    pass
+    existing_user = User.query.filter(
+        (User.username == body["username"]) | (User.email == body["email"])
+    ).first()
+    
+    if existing_user:
+        abort(409, message="Username or email already registered")
+
+    new_user = User(
+        name=body["name"],
+        username=body["username"],
+        email=body["email"],
+        password_hash=generate_password_hash(body["password"], method="pbkdf2:sha256")
+    )
+    
+    db.session.add(new_user)
+    db.session.commit()
+
+    access_token = create_access_token(identity=str(new_user.user_id))
+    
+    return {"access_token": access_token}
  
+
 @authentication_blp.route("/sign-in", methods=["POST"])
 @authentication_blp.arguments(SignInRequestSchema)
 @authentication_blp.response(200, AccessTokenResponseSchema)
 @authentication_blp.doc(summary="Sign in", description="Sign in to an existing account.", responses={"401": _err("Invalid username or password"), "422": _validation_err})
 def sign_in(body):
-    pass
+    user = User.query.filter_by(username=body["username"]).first()
+
+    if not user or not check_password_hash(user.password_hash, body["password"]):
+        abort(401, message="Invalid username or password")
+
+    access_token = create_access_token(identity=str(user.user_id))
+    
+    return {"access_token": access_token}
  
- 
+
 @user_blp.route("/info", methods=["GET"])
 @jwt_required()
 @user_blp.response(200, UserResponseSchema)
 @user_blp.doc(summary="Get user information", description="Get user information.", security=_jwt_security, responses={"401": _err("Missing or invalid token")})
 def get_user_info():
-    pass
+    current_user_id = get_jwt_identity()
+    
+    user = User.query.get(current_user_id)
+    
+    if not user:
+        abort(404, message="User not found")
+        
+    return user
  
- 
+
 @organisation_blp.route("/create", methods=["POST"])
 @jwt_required()
 @organisation_blp.arguments(CreateOrganisationRequestSchema)
