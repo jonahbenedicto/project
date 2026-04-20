@@ -3,9 +3,14 @@ import { getStoredAccessToken } from "./storage"
 import { Loader2 } from "lucide-react"
 import AuthPage from "./AuthPage"
 import UserPage from "./UserPage"
+import OrganisationPage from "./OrganisationPage"
+import PolicyPage from "./PolicyPage"
+import ConsentPage from "./ConsentPage"
+
+type Page = "loading" | "auth" | "user" | "organisation" | "policy" | "consent"
 
 export default function App() {
-  const [page, setPage] = useState<"auth" | "user" | "loading">("loading")
+  const [page, setPage] = useState<Page>("loading")
 
   useEffect(() => {
     async function checkToken() {
@@ -23,9 +28,43 @@ export default function App() {
     )
   }
 
-  if (page === "user") {
-    return <UserPage onSignOut={() => setPage("auth")} />
+  if (page === "auth") {
+    return <AuthPage onSignIn={() => setPage("user")} />
   }
 
-  return <AuthPage onSignIn={() => setPage("user")} />
+  if (page === "organisation") {
+    return (
+      <OrganisationPage
+        onBack={() => setPage("user")}
+        onSignOut={() => setPage("auth")}
+      />
+    )
+  }
+
+  if (page === "policy") {
+    return (
+      <PolicyPage
+        onBack={() => setPage("user")}
+        onSignOut={() => setPage("auth")}
+      />
+    )
+  }
+
+  if (page === "consent") {
+    return (
+      <ConsentPage
+        onBack={() => setPage("user")}
+        onSignOut={() => setPage("auth")}
+      />
+    )
+  }
+
+  return (
+    <UserPage
+      onSignOut={() => setPage("auth")}
+      onGoToOrganisation={() => setPage("organisation")}
+      onGoToPolicy={() => setPage("policy")}
+      onGoToConsent={() => setPage("consent")}
+    />
+  )
 }

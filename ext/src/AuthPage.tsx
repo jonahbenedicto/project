@@ -3,10 +3,10 @@ import { setStoredAccessToken } from "./storage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, AlertCircle, User } from "lucide-react"
+import { Loader2, AlertCircle } from "lucide-react"
 
 const API_BASE = "http://127.0.0.1:5000"
 
@@ -59,15 +59,8 @@ export default function AuthPage({ onSignIn }: { onSignIn: () => void }) {
 
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-xs">
-        <CardHeader className="items-center gap-1 pb-4">
-          <div className="flex items-center flex-col gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
-              <User className="h-5 w-5 text-primary" />
-            </div>
-            <p className="text-sm font-semibold tracking-wide">ext</p>
-          </div>
-        </CardHeader>
+      <Card className="w-full">
+
         <CardContent>
           <Tabs defaultValue="sign-in" onValueChange={() => setError("")}>
             <TabsList className="w-full">

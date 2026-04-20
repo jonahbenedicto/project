@@ -9,6 +9,8 @@ from flask_smorest import Api, Blueprint, abort
 from marshmallow import Schema, fields, validate
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
+import hashlib
+import secrets
  
 app = Flask(__name__)
 CORS(app)
@@ -373,8 +375,13 @@ class OrganisationResponseSchema(Schema):
     owner_id = fields.Int(dump_only=True, metadata={"description": "Owner ID"})
     active_policy_id = fields.Int(dump_only=True, allow_none=True, metadata={"description": "Active policy ID"})
     created_at = fields.DateTime(dump_only=True, metadata={"description": "Created at"})
- 
- 
+
+class MembershipRoleResponseSchema(Schema):
+    class Meta:
+        example = {"role": "admin"}
+    role = fields.String(dump_only=True, metadata={"description": "Role name"})
+
+
 # --- Invite ---
  
 class CreateInviteRequestSchema(Schema):
@@ -707,30 +714,144 @@ def get_user_info():
 @organisation_blp.response(201, OrganisationResponseSchema)
 @organisation_blp.doc(summary="Create organisation", description="Create organisation.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("User is already a member of an organisation"), "409": _err("Organisation name already taken"), "422": _validation_err})
 def create_organisation(body):
-    pass
+    current_user_id = int(get_jwt_identity())
+ 
+    existing_membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if existing_membership:
+        abort(403, message="User is already a member of an organisation")
+ 
+    existing_org = Organisation.query.filter_by(name=body["name"]).first()
+    if existing_org:
+        abort(409, message="Organisation name already taken")
+ 
+    organisation = Organisation(
+        name=body["name"],
+        owner_id=current_user_id,
+    )
+    db.session.add(organisation)
+    db.session.flush()
+ 
+    owner_role = Role.query.filter_by(name=RoleName.OWNER).first()
+ 
+    membership = Membership(
+        organisation_id=organisation.organisation_id,
+        user_id=current_user_id,
+        role_id=owner_role.role_id,
+    )
+    db.session.add(membership)
+    db.session.commit()
+ 
+    return organisation
  
 @organisation_blp.route("/info", methods=["GET"])
 @jwt_required()
 @organisation_blp.response(200, OrganisationResponseSchema)
 @organisation_blp.doc(summary="Get organisation information", description="Get organisation information.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("User is not a member of any organisation")})
 def get_organisation_info():
-    pass
+    current_user_id = int(get_jwt_identity())
  
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership:
+        abort(404, message="User is not a member of any organisation")
  
+    return membership.organisation
+
+
+@organisation_blp.route("/role", methods=["GET"])
+@jwt_required()
+@organisation_blp.response(200, MembershipRoleResponseSchema)
+@organisation_blp.doc(summary="Get my role", description="Get the current user's role in their organisation.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("User is not a member of any organisation")})
+def get_my_role():
+    current_user_id = int(get_jwt_identity())
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership:
+        abort(404, message="User is not a member of any organisation")
+
+    return {"role": membership.role.name.value}
+
+
 @invite_blp.route("/create", methods=["POST"])
 @jwt_required()
 @invite_blp.arguments(CreateInviteRequestSchema)
 @invite_blp.response(201, InviteResponseSchema)
 @invite_blp.doc(summary="Create invite", description="Create invite.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("User does not have permission to create invites"), "422": _validation_err})
 def create_invite(body):
-    pass
+    current_user_id = int(get_jwt_identity())
+ 
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership:
+        abort(403, message="User does not have permission to create invites")
+ 
+    caller_role = membership.role.name
+    requested_role_name = RoleName(body["role"])
+ 
+    if caller_role == RoleName.MEMBER:
+        abort(403, message="User does not have permission to create invites")
+    if caller_role == RoleName.ADMIN and requested_role_name != RoleName.MEMBER:
+        abort(403, message="User does not have permission to create invites")
+    if requested_role_name == RoleName.OWNER:
+        abort(403, message="User does not have permission to create invites")
+ 
+    target_role = Role.query.filter_by(name=requested_role_name).first()
+ 
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+ 
+    invite = Invite(
+        token_hash=token_hash,
+        organisation_id=membership.organisation_id,
+        role_id=target_role.role_id,
+        max_usage=body.get("max_usage", 1),
+    )
+    db.session.add(invite)
+    db.session.commit()
+ 
+    return {
+        "invite_id": invite.invite_id,
+        "invite_code": raw_token,
+        "role": invite.role.name.value,
+        "expires_at": invite.expires_at,
+        "usage_count": invite.usage_count,
+        "max_usage": invite.max_usage,
+        "created_at": invite.created_at,
+    }
  
 @invite_blp.route("/accept/<string:invite_code>", methods=["POST"])
 @jwt_required()
 @invite_blp.response(200, OrganisationResponseSchema)
 @invite_blp.doc(summary="Accept invite", description="Accept invite.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("Invite not found"), "409": _err("User is already a member of an organisation"), "410": _err("Invite has expired or reached its usage limit")})
 def accept_invite(invite_code):
-    pass
+    current_user_id = int(get_jwt_identity())
+ 
+    existing_membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if existing_membership:
+        abort(409, message="User is already a member of an organisation")
+ 
+    token_hash = hashlib.sha256(invite_code.encode()).hexdigest()
+    invite = Invite.query.filter_by(token_hash=token_hash).first()
+    if not invite:
+        abort(404, message="Invite not found")
+ 
+    now = datetime.now(timezone.utc)
+    expires_at = invite.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+ 
+    if now > expires_at or invite.usage_count >= invite.max_usage:
+        abort(410, message="Invite has expired or reached its usage limit")
+ 
+    invite.usage_count += 1
+ 
+    membership = Membership(
+        organisation_id=invite.organisation_id,
+        user_id=current_user_id,
+        role_id=invite.role_id,
+    )
+    db.session.add(membership)
+    db.session.commit()
+ 
+    return invite.organisation
  
  
 @consent_blp.route("/give/<int:policy_id>", methods=["POST"])
@@ -738,28 +859,72 @@ def accept_invite(invite_code):
 @consent_blp.response(201, ConsentResponseSchema)
 @consent_blp.doc(summary="Give consent", description="Give consent.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("Policy not found"), "409": _err("User has already given consent to this policy")})
 def give_consent(policy_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    policy = Policy.query.get(policy_id)
+    if not policy:
+        abort(404, message="Policy not found")
+
+    existing = Consent.query.filter_by(user_id=current_user_id, policy_id=policy_id).first()
+    if existing:
+        if existing.has_consent:
+            abort(409, message="User has already given consent to this policy")
+        # Re-consent after a prior revocation: update the existing record
+        existing.has_consent = True
+        existing.revoked_at = None
+        existing.created_at = datetime.now(timezone.utc)
+        db.session.commit()
+        return existing
+
+    consent = Consent(
+        user_id=current_user_id,
+        policy_id=policy_id,
+        has_consent=True,
+    )
+    db.session.add(consent)
+    db.session.commit()
+
+    return consent
  
 @consent_blp.route("/revoke/<int:policy_id>", methods=["PATCH"])
 @jwt_required()
 @consent_blp.response(200, ConsentResponseSchema)
 @consent_blp.doc(summary="Revoke consent", description="Revoke consent.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("Consent record not found for this policy")})
 def revoke_consent(policy_id):
-    pass
- 
+    current_user_id = int(get_jwt_identity())
+
+    consent = Consent.query.filter_by(user_id=current_user_id, policy_id=policy_id).first()
+    if not consent:
+        abort(404, message="Consent record not found for this policy")
+
+    consent.has_consent = False
+    consent.revoked_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    return consent
+
 @consent_blp.route("/<int:policy_id>", methods=["GET"])
 @jwt_required()
 @consent_blp.response(200, ConsentResponseSchema)
 @consent_blp.doc(summary="Get consent", description="Get consent.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("Consent record not found for this policy")})
 def get_consent(policy_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    consent = Consent.query.filter_by(user_id=current_user_id, policy_id=policy_id).first()
+    if not consent:
+        abort(404, message="Consent record not found for this policy")
+
+    return consent
  
 @consent_blp.route("/list", methods=["GET"])
 @jwt_required()
 @consent_blp.response(200, ConsentResponseSchema(many=True))
 @consent_blp.doc(summary="List consents", description="List consents.", security=_jwt_security, responses={"401": _err("Missing or invalid token")})
 def list_consents():
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    consents = Consent.query.filter_by(user_id=current_user_id).all()
+    return consents
  
  
 @policy_blp.route("/list", methods=["GET"])
@@ -767,7 +932,14 @@ def list_consents():
 @policy_blp.response(200, PolicyResponseSchema(many=True))
 @policy_blp.doc(summary="List policies", description="List policies.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("User is not a member of any organisation")})
 def list_policies():
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership:
+        abort(404, message="User is not a member of any organisation")
+
+    policies = Policy.query.filter_by(organisation_id=membership.organisation_id).all()
+    return policies
  
 @policy_blp.route("/create", methods=["POST"])
 @jwt_required()
@@ -775,28 +947,92 @@ def list_policies():
 @policy_blp.response(201, PolicyResponseSchema)
 @policy_blp.doc(summary="Create policy", description="Create policy.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("User does not have permission to create policies"), "422": _validation_err})
 def create_policy(body):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership or membership.role.name == RoleName.MEMBER:
+        abort(403, message="User does not have permission to create policies")
+
+    policy = Policy(
+        organisation_id=membership.organisation_id,
+        valid_protocols=body["valid_protocols"],
+        valid_key_exchanges=body["valid_key_exchanges"],
+        valid_key_exchange_groups=body["valid_key_exchange_groups"],
+        valid_ciphers=body["valid_ciphers"],
+        valid_macs=body["valid_macs"],
+        valid_domains=body["valid_domains"],
+        valid_issuers=body["valid_issuers"],
+        min_days_until_expiration=body["min_days_until_expiration"],
+        max_days_since_issuance=body["max_days_since_issuance"],
+        require_signed_certificate_timestamp_list=body["require_signed_certificate_timestamp_list"],
+        require_certificate_transparency_compliance=body["require_certificate_transparency_compliance"],
+        require_encrypted_client_hello=body["require_encrypted_client_hello"],
+    )
+    db.session.add(policy)
+    db.session.commit()
+
+    return policy
  
 @policy_blp.route("/active", methods=["GET"])
 @jwt_required()
 @policy_blp.response(200, PolicyResponseSchema)
 @policy_blp.doc(summary="Get active policy", description="Get active policy.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "404": _err("Organisation has no active policy set")})
 def get_active_policy():
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership:
+        abort(404, message="User is not a member of any organisation")
+
+    organisation = membership.organisation
+    if not organisation.active_policy_id:
+        abort(404, message="Organisation has no active policy set")
+
+    return organisation.active_policy
  
 @policy_blp.route("/<int:policy_id>", methods=["GET"])
 @jwt_required()
 @policy_blp.response(200, PolicyResponseSchema)
 @policy_blp.doc(summary="Get policy", description="Get policy.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("Policy does not belong to the user's organisation"), "404": _err("Policy not found")})
 def get_policy(policy_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership:
+        abort(403, message="Policy does not belong to the user's organisation")
+
+    policy = Policy.query.get(policy_id)
+    if not policy:
+        abort(404, message="Policy not found")
+
+    if policy.organisation_id != membership.organisation_id:
+        abort(403, message="Policy does not belong to the user's organisation")
+
+    return policy
  
 @policy_blp.route("/active/<int:policy_id>", methods=["POST"])
 @jwt_required()
 @policy_blp.response(200, OrganisationResponseSchema)
 @policy_blp.doc(summary="Set active policy", description="Set active policy.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("User does not have permission to set the active policy"), "404": _err("Policy not found")})
 def set_active_policy(policy_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership or membership.role.name == RoleName.MEMBER:
+        abort(403, message="User does not have permission to set the active policy")
+
+    policy = Policy.query.get(policy_id)
+    if not policy:
+        abort(404, message="Policy not found")
+
+    if policy.organisation_id != membership.organisation_id:
+        abort(403, message="User does not have permission to set the active policy")
+
+    organisation = membership.organisation
+    organisation.active_policy_id = policy.policy_id
+    db.session.commit()
+
+    return organisation
  
  
 @certificate_blp.route("/list", methods=["GET"])
@@ -879,6 +1115,11 @@ api.register_blueprint(compliance_blp)
  
 with app.app_context():
     db.create_all()
+
+    for role_name in RoleName:
+        if not Role.query.filter_by(name=role_name).first():
+            db.session.add(Role(name=role_name))
+    db.session.commit()
  
  
 if __name__ == '__main__':
