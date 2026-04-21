@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import {
   Crown, Shield, User, AtSign,
   Loader2, Mail, Calendar, LogOut, Building2, ScrollText, ShieldCheck, ChevronRight,
+  ClipboardCheck,
+  FileCode,
 } from "lucide-react"
 
 const API_BASE = "http://127.0.0.1:5000"
@@ -38,11 +40,15 @@ export default function UserPage({
   onGoToOrganisation,
   onGoToPolicy,
   onGoToConsent,
+  onGoToCertificate,
+  onGoToCompliance,
 }: {
   onSignOut: () => void
   onGoToOrganisation: () => void
   onGoToPolicy: () => void
   onGoToConsent: () => void
+  onGoToCertificate: () => void
+  onGoToCompliance: () => void
 }) {
   const [user, setUser]     = useState<UserInfo | null>(null)
   const [hasOrg, setHasOrg] = useState(false)
@@ -175,6 +181,30 @@ export default function UserPage({
                 </Button>
               </>
             )}
+
+            <Button
+              variant="ghost"
+              className="w-full justify-between text-sm font-normal h-10"
+              onClick={onGoToCertificate}
+            >
+              <span className="flex items-center gap-2">
+                <FileCode className="h-4 w-4 text-muted-foreground" />
+                Certificates
+              </span>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </Button>
+
+            <Button
+              variant="ghost"
+              className="w-full justify-between text-sm font-normal h-10"
+              onClick={onGoToCompliance}
+            >
+              <span className="flex items-center gap-2">
+                <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
+                Compliance
+              </span>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </Button>
           </CardContent>
         </Card>
 

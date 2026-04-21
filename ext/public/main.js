@@ -72,22 +72,7 @@ function matchesDomain(domain, pattern) {
     return false
 }
 
-function complianceCheck(certificate, policy) {
-    return {
-        hasValidProtocol: policy.validProtocols.length === 0 || policy.validProtocols.includes(certificate.protocol),
-        hasValidKeyExchange: policy.validKeyExchanges.length === 0 || policy.validKeyExchanges.includes(certificate.keyExchange),
-        hasValidKeyExchangeGroup: policy.validKeyExchangeGroups.length === 0 || policy.validKeyExchangeGroups.includes(certificate.keyExchangeGroup),
-        hasValidCipher: policy.validCiphers.length === 0 || policy.validCiphers.includes(certificate.cipher),
-        hasValidMac: policy.validMacs.length === 0 || policy.validMacs.includes(certificate.mac),
-        hasValidDomain: policy.validDomains.some(pattern => matchesDomain(certificate.subjectName, pattern) || certificate.sanList.some(san => matchesDomain(san, pattern))),
-        hasValidIssuer: policy.validIssuers.length === 0 || policy.validIssuers.includes(certificate.issuer),
-        hasValidDaysUntilExpiration: (new Date(certificate.validTo) - new Date()) / (1000 * 60 * 60 * 24) >= policy.minDaysUntilExpiration,
-        hasValidDaysSinceIssuance: (new Date() - new Date(certificate.validFrom)) / (1000 * 60 * 60 * 24) <= policy.maxDaysSinceIssuance,
-        hasValidSignedCertificateTimestampList: (certificate.signedCertificateTimestampList && certificate.signedCertificateTimestampList.length > 0) === policy.requireSignedCertificateTimestampList,
-        hasValidCertificateTransparencyCompliance: certificate.certificateTransparencyCompliance === policy.requireCertificateTransparencyCompliance,
-        hasValidEncryptedClientHello: certificate.encryptedClientHello === policy.requireEncryptedClientHello,
-    }
-}
+const API_BASE_URL = "http://127.0.0.1:5000";
 
 chrome.debugger.onEvent.addListener(async (debuggeeId, message, params) =>{
     if (message !== "Network.responseReceived") {
@@ -109,47 +94,90 @@ chrome.debugger.onEvent.addListener(async (debuggeeId, message, params) =>{
         return
     }
     const securityDetails = params.response.securityDetails
+    const token = await getAuthToken(); // Helper to retrieve your stored JWT
 
-    const policy = {
-        validProtocols: ["QUIC", "TLS 1.3"],
-        validKeyExchanges: [],
-        validKeyExchangeGroups: ["X25519MLKEM768"],
-        validCiphers: ["AES_128_GCM"],
-        validMacs: [],
-        validDomains: ["google.com"],
-        validIssuers: ["WR2"],
-        minDaysUntilExpiration: 30,
-        maxDaysSinceIssuance: 365,
-        requireSignedCertificateTimestampList: true,
-        requireCertificateTransparencyCompliance: true,
-        requireEncryptedClientHello: true,
+    if (!token) {
+        console.warn("No auth token found. Skipping certificate sync.");
+        return;
     }
 
-    // Get validDomains from server side
-    const validDomains = policy.validDomains
+    try {
+        // 1. Get the active policy for the user's organisation
+        const policyResponse = await fetch(`${API_BASE_URL}/api/policy/active`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
 
-    const certificate = {
-        protocol: securityDetails.protocol,
-        keyExchange: securityDetails.keyExchange,
-        keyExchangeGroup: securityDetails.keyExchangeGroup,
-        cipher: securityDetails.cipher,
-        mac: securityDetails.mac,
-        subjectName: securityDetails.subjectName,
-        sanList: securityDetails.sanList,
-        issuer: securityDetails.issuer,
-        validFrom: new Date(securityDetails.validFrom * 1000).toISOString(),
-        validTo: new Date(securityDetails.validTo * 1000).toISOString(),
-        signedCertificateTimestampList: securityDetails.signedCertificateTimestampList,
-        certificateTransparencyCompliance: securityDetails.certificateTransparencyCompliance,
-        encryptedClientHello: securityDetails.encryptedClientHello,
+        if (!policyResponse.ok) return; // Organisation might not have an active policy
+        const policy = await policyResponse.json();
+
+        // 2. Check if the user has consented to this specific policy
+        const consentResponse = await fetch(`${API_BASE_URL}/api/consent/${policy.policy_id}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        const consentData = await consentResponse.json();
+        if (!consentData.has_consent) {
+            console.log("User has not consented to this policy. Sync aborted.");
+            return;
+        }
+
+        // 3. Check domain relevance before sending
+        const certDomains = [securityDetails.subjectName, ...(securityDetails.sanList || [])];
+        const isRelevant = policy.valid_domains.length === 0 || certDomains.some(domain => 
+            policy.valid_domains.some(pattern => matchesDomain(domain, pattern))
+        );
+
+        // Inside chrome.debugger.onEvent.addListener
+        if (isRelevant) {
+            console.log("Domain is relevant, attempting to sync...");
+            const certificatePayload = {
+                protocol: securityDetails.protocol,
+                key_exchange: securityDetails.keyExchange || "",
+                key_exchange_group: securityDetails.keyExchangeGroup || "",
+                cipher: securityDetails.cipher,
+                mac: securityDetails.mac || "",
+                subject_name: securityDetails.subjectName,
+                san_list: securityDetails.sanList || [],
+                issuer: securityDetails.issuer,
+                // Convert Unix timestamps to ISO strings for Python
+                valid_from: new Date(securityDetails.validFrom * 1000).toISOString(),
+                valid_to: new Date(securityDetails.validTo * 1000).toISOString(),
+                signed_certificate_timestamp_list: (securityDetails.signedCertificateTimestampList || []).length > 0,
+                certificate_transparency_compliance: securityDetails.certificateTransparencyCompliance === "compliant",
+                encrypted_client_hello: !!securityDetails.encryptedClientHello
+            };
+
+            const createResponse = await fetch(`${API_BASE_URL}/api/certificate/create`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(certificatePayload)
+            });
+
+            if (createResponse.ok) {
+                console.log("Certificate successfully synced.");
+            } else {
+                const errorData = await createResponse.json();
+                console.error("Server rejected certificate:", errorData); // Add this
+            }
+        } else {
+            console.log("Certificate domains not relevant to active policy."); // Add this
+        }
+    } catch (error) {
+        console.error("Error during certificate automation:", error);
     }
-
-    const hasValidDomain = validDomains.some(pattern => matchesDomain(certificate.subjectName, pattern) || certificate.sanList.some(san => matchesDomain(san, pattern)))
-
-    if (hasValidDomain) {
-        console.log(certificate)
-    }
-
-    // Move compliance check to server side
-    const compliance = complianceCheck(certificate, policy)
 })
+
+// main.js
+
+function getAuthToken() {
+    return new Promise((resolve) => {
+        // Look for the exact key used in storage.ts
+        chrome.storage.local.get(["accessToken"], (result) => {
+            // Change result.access_token to result.accessToken
+            resolve(result.accessToken || null);
+        });
+    });
+}

@@ -6,8 +6,10 @@ import UserPage from "./UserPage"
 import OrganisationPage from "./OrganisationPage"
 import PolicyPage from "./PolicyPage"
 import ConsentPage from "./ConsentPage"
+import CertificatePage from "./CertificatePage"
+import CompliancePage from "./CompliancePage"
 
-type Page = "loading" | "auth" | "user" | "organisation" | "policy" | "consent"
+type Page = "loading" | "auth" | "user" | "organisation" | "policy" | "consent" | "certificate" | "compliance"
 
 export default function App() {
   const [page, setPage] = useState<Page>("loading")
@@ -59,12 +61,32 @@ export default function App() {
     )
   }
 
+  if (page === "certificate") {
+    return (
+      <CertificatePage
+        onBack={() => setPage("user")}
+        onSignOut={() => setPage("auth")}
+      />
+    )
+  }
+
+  if (page === "compliance") {
+    return (
+      <CompliancePage
+        onBack={() => setPage("user")}
+        onSignOut={() => setPage("auth")}
+      />
+    )
+  }
+
   return (
     <UserPage
       onSignOut={() => setPage("auth")}
       onGoToOrganisation={() => setPage("organisation")}
       onGoToPolicy={() => setPage("policy")}
       onGoToConsent={() => setPage("consent")}
+      onGoToCertificate={() => setPage("certificate")}
+      onGoToCompliance={() => setPage("compliance")}
     />
   )
 }

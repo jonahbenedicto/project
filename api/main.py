@@ -11,6 +11,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 import hashlib
 import secrets
+import re
  
 app = Flask(__name__)
 CORS(app)
@@ -227,6 +228,7 @@ class Policy(db.Model):
  
     policy_id = db.Column(db.Integer, primary_key=True)
     organisation_id = db.Column(db.Integer, db.ForeignKey("organisations.organisation_id"), nullable=False)
+    name = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
  
     valid_protocols = db.Column(Array(db.Text), nullable=False)
@@ -438,6 +440,7 @@ class ConsentResponseSchema(Schema):
 class CreatePolicyRequestSchema(Schema):
     class Meta:
         example = {
+            "name": "Default Policy",
             "valid_protocols": ["TLSv1.2", "TLSv1.3"],
             "valid_key_exchanges": ["ECDH"],
             "valid_key_exchange_groups": ["P-256", "X25519"],
@@ -451,6 +454,7 @@ class CreatePolicyRequestSchema(Schema):
             "require_certificate_transparency_compliance": True,
             "require_encrypted_client_hello": False,
         }
+    name = fields.String(required=True, metadata={"description": "Policy name"})
     valid_protocols = fields.List(fields.String(), required=True, metadata={"description": "Valid protocols"})
     valid_key_exchanges = fields.List(fields.String(), required=True, metadata={"description": "Valid key exchanges"})
     valid_key_exchange_groups = fields.List(fields.String(), required=True, metadata={"description": "Valid key exchange groups"})
@@ -469,6 +473,7 @@ class PolicyResponseSchema(Schema):
         example = {
             "policy_id": 3,
             "organisation_id": 1,
+            "name": "Default Policy",
             "created_at": "2024-01-15T10:30:00",
             "valid_protocols": ["TLSv1.2", "TLSv1.3"],
             "valid_key_exchanges": ["ECDH"],
@@ -485,6 +490,7 @@ class PolicyResponseSchema(Schema):
         }
     policy_id = fields.Int(dump_only=True, metadata={"description": "Policy ID"})
     organisation_id = fields.Int(dump_only=True, metadata={"description": "Organisation ID"})
+    name = fields.String(dump_only=True, metadata={"description": "Policy name"})
     created_at = fields.DateTime(dump_only=True, metadata={"description": "Created at"})
     valid_protocols = fields.List(fields.String(), dump_only=True, metadata={"description": "Valid protocols"})
     valid_key_exchanges = fields.List(fields.String(), dump_only=True, metadata={"description": "Valid key exchanges"})
@@ -575,6 +581,12 @@ class CertificateResponseSchema(Schema):
  
 # --- Errors ---
  
+class CertificateListQuerySchema(Schema):
+    domain = fields.String(
+        load_default=None,
+        metadata={"description": "Optional domain filter (subject name or SAN). Leave empty to return all certificates."}
+    )
+
 class ErrorResponseSchema(Schema):
     """Error — 401, 403, 404, 409, 410"""
     class Meta:
@@ -643,6 +655,57 @@ class ComplianceResponseSchema(Schema):
  
  
 # Routes
+
+def matches_domain(domain, pattern):
+    """Helper to check if a domain matches a policy pattern (e.g., *.example.com)."""
+    domain = domain.lower()
+    pattern = pattern.lower()
+    
+    if domain == pattern:
+        return True
+        
+    if pattern.startswith("*."):
+        suffix = pattern[1:]  # .example.com
+        if domain.endswith(suffix):
+            prefix = domain[:-len(suffix)]
+            # Ensure the wildcard only covers one subdomain level
+            return len(prefix) > 0 and "." not in prefix
+    return False
+
+def evaluate_compliance(cert, policy):
+    """Evaluates a certificate against a policy and returns a Compliance instance."""
+    now = datetime.now(timezone.utc)
+    
+    # Handle timezone awareness for date comparisons
+    v_to = cert.valid_to.replace(tzinfo=timezone.utc) if cert.valid_to.tzinfo is None else cert.valid_to
+    v_from = cert.valid_from.replace(tzinfo=timezone.utc) if cert.valid_from.tzinfo is None else cert.valid_from
+    
+    days_until_expiration = (v_to - now).days
+    days_since_issuance = (now - v_from).days
+
+    # Check domains (Subject Name or SAN list) — empty list means accept any domain
+    cert_domains = [cert.subject_name] + (cert.san_list or [])
+    domain_valid = not policy.valid_domains or any(
+        any(matches_domain(d, pattern) for pattern in policy.valid_domains)
+        for d in cert_domains
+    )
+
+    return Compliance(
+        certificate_id=cert.certificate_id,
+        policy_id=policy.policy_id,
+        has_valid_protocol=not policy.valid_protocols or cert.protocol in policy.valid_protocols,
+        has_valid_key_exchange=not policy.valid_key_exchanges or cert.key_exchange in policy.valid_key_exchanges,
+        has_valid_key_exchange_group=not policy.valid_key_exchange_groups or cert.key_exchange_group in policy.valid_key_exchange_groups,
+        has_valid_cipher=not policy.valid_ciphers or cert.cipher in policy.valid_ciphers,
+        has_valid_mac=not policy.valid_macs or cert.mac in policy.valid_macs,
+        has_valid_domain=domain_valid,
+        has_valid_issuer=not policy.valid_issuers or cert.issuer in policy.valid_issuers,
+        has_valid_days_until_expiration=days_until_expiration >= policy.min_days_until_expiration,
+        has_valid_days_since_issuance=days_since_issuance <= policy.max_days_since_issuance,
+        has_valid_signed_certificate_timestamp_list=not policy.require_signed_certificate_timestamp_list or cert.signed_certificate_timestamp_list,
+        has_valid_certificate_transparency_compliance=not policy.require_certificate_transparency_compliance or cert.certificate_transparency_compliance,
+        has_valid_encrypted_client_hello=not policy.require_encrypted_client_hello or cert.encrypted_client_hello
+    )
  
 _jwt_security = [{"bearerAuth": []}]
  
@@ -955,6 +1018,7 @@ def create_policy(body):
 
     policy = Policy(
         organisation_id=membership.organisation_id,
+        name=body["name"],
         valid_protocols=body["valid_protocols"],
         valid_key_exchanges=body["valid_key_exchanges"],
         valid_key_exchange_groups=body["valid_key_exchange_groups"],
@@ -1037,25 +1101,89 @@ def set_active_policy(policy_id):
  
 @certificate_blp.route("/list", methods=["GET"])
 @jwt_required()
+@certificate_blp.arguments(CertificateListQuerySchema, location="query")
 @certificate_blp.response(200, CertificateResponseSchema(many=True))
-@certificate_blp.doc(summary="List certificates", description="List certificates.", security=_jwt_security, responses={"401": _err("Missing or invalid token")})
-def list_certificates():
-    pass
- 
+@certificate_blp.doc(summary="List certificates", description="List certificates for the current user. Optionally filter by domain — leave empty to return all.", security=_jwt_security)
+def list_certificates(query):
+    current_user_id = int(get_jwt_identity())
+    certs = Certificate.query.filter_by(user_id=current_user_id).all()
+
+    domain = query.get("domain")
+    if not domain:
+        return certs
+
+    domain = domain.lower()
+    return [
+        cert for cert in certs
+        if cert.subject_name.lower() == domain
+        or domain in [s.lower() for s in (cert.san_list or [])]
+    ]
+
 @certificate_blp.route("/create", methods=["POST"])
 @jwt_required()
 @certificate_blp.arguments(CreateCertificateRequestSchema)
 @certificate_blp.response(201, CertificateResponseSchema)
-@certificate_blp.doc(summary="Create certificate", description="Create certificate.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "422": _validation_err})
+@certificate_blp.doc(summary="Create certificate", security=_jwt_security)
 def create_certificate(body):
-    pass
- 
+    current_user_id = int(get_jwt_identity())
+    
+    # 1. Initialize the certificate object
+    new_cert = Certificate(
+        user_id=current_user_id,
+        protocol=body["protocol"],
+        key_exchange=body["key_exchange"],
+        key_exchange_group=body["key_exchange_group"],
+        cipher=body["cipher"],
+        mac=body["mac"],
+        subject_name=body["subject_name"],
+        san_list=body["san_list"],
+        issuer=body["issuer"],
+        valid_from=body["valid_from"],
+        valid_to=body["valid_to"],
+        signed_certificate_timestamp_list=body["signed_certificate_timestamp_list"],
+        certificate_transparency_compliance=body["certificate_transparency_compliance"],
+        encrypted_client_hello=body["encrypted_client_hello"]
+    )
+    
+    db.session.add(new_cert)
+    db.session.flush()  # To get new_cert.certificate_id before committing
+
+    # 2. Automatic Compliance Logic
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    
+    if membership and membership.organisation.active_policy_id:
+        policy = membership.organisation.active_policy
+        
+        # Check if user has consented to the current active policy
+        consent = Consent.query.filter_by(
+            user_id=current_user_id, 
+            policy_id=policy.policy_id, 
+            has_consent=True
+        ).first()
+        
+        if consent:
+            compliance_record = evaluate_compliance(new_cert, policy)
+            db.session.add(compliance_record)
+            db.session.flush()
+            
+            # Update the certificate with the reference to the newest check
+            new_cert.recent_compliance_id = compliance_record.compliance_id
+
+    db.session.commit()
+    return new_cert
+
 @certificate_blp.route("/<int:certificate_id>", methods=["GET"])
 @jwt_required()
 @certificate_blp.response(200, CertificateResponseSchema)
-@certificate_blp.doc(summary="Get certificate", description="Get certificate.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("Certificate does not belong to the current user"), "404": _err("Certificate not found")})
+@certificate_blp.doc(summary="Get certificate", security=_jwt_security)
 def get_certificate(certificate_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+    cert = Certificate.query.get_or_404(certificate_id)
+    
+    if cert.user_id != current_user_id:
+        abort(403, message="Certificate does not belong to the current user")
+        
+    return cert
  
  
 @compliance_blp.route("/list/<int:certificate_id>", methods=["GET"])
@@ -1063,42 +1191,142 @@ def get_certificate(certificate_id):
 @compliance_blp.response(200, ComplianceResponseSchema(many=True))
 @compliance_blp.doc(summary="List compliances", description="List compliances.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("Certificate does not belong to the current user"), "404": _err("Certificate not found")})
 def list_compliances(certificate_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    cert = Certificate.query.get(certificate_id)
+    if not cert:
+        abort(404, message="Certificate not found")
+
+    if cert.user_id != current_user_id:
+        abort(403, message="Certificate does not belong to the current user")
+
+    return Compliance.query.filter_by(certificate_id=certificate_id).all()
  
 @compliance_blp.route("/check/<int:certificate_id>", methods=["POST"])
 @jwt_required()
 @compliance_blp.response(201, ComplianceResponseSchema)
 @compliance_blp.doc(summary="Check compliance", description="Check compliance.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("Certificate does not belong to the current user, or user has not consented to the active policy"), "404": _err("Certificate not found, or organisation has no active policy")})
 def check_compliance(certificate_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    cert = Certificate.query.get(certificate_id)
+    if not cert:
+        abort(404, message="Certificate not found")
+
+    if cert.user_id != current_user_id:
+        abort(403, message="Certificate does not belong to the current user")
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership or not membership.organisation.active_policy_id:
+        abort(404, message="Organisation has no active policy")
+
+    policy = membership.organisation.active_policy
+
+    consent = Consent.query.filter_by(
+        user_id=current_user_id,
+        policy_id=policy.policy_id,
+        has_consent=True
+    ).first()
+    if not consent:
+        abort(403, message="User has not consented to the active policy")
+
+    compliance_record = evaluate_compliance(cert, policy)
+    db.session.add(compliance_record)
+    db.session.flush()
+
+    cert.recent_compliance_id = compliance_record.compliance_id
+    db.session.commit()
+
+    return compliance_record
  
 @compliance_blp.route("/check/all", methods=["POST"])
 @jwt_required()
 @compliance_blp.response(201, ComplianceResponseSchema(many=True))
 @compliance_blp.doc(summary="Check compliances", description="Check compliances.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("One or more certificates do not belong to the current user, or user has not consented to the active policy"), "404": _err("One or more certificates not found, or organisation has no active policy"), "422": _validation_err})
 def check_compliances():
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    membership = Membership.query.filter_by(user_id=current_user_id).first()
+    if not membership or not membership.organisation.active_policy_id:
+        abort(404, message="Organisation has no active policy")
+
+    policy = membership.organisation.active_policy
+
+    consent = Consent.query.filter_by(
+        user_id=current_user_id,
+        policy_id=policy.policy_id,
+        has_consent=True
+    ).first()
+    if not consent:
+        abort(403, message="User has not consented to the active policy")
+
+    certificates = Certificate.query.filter_by(user_id=current_user_id).all()
+
+    new_records = []
+    for cert in certificates:
+        compliance_record = evaluate_compliance(cert, policy)
+        db.session.add(compliance_record)
+        db.session.flush()
+
+        cert.recent_compliance_id = compliance_record.compliance_id
+        new_records.append(compliance_record)
+
+    db.session.commit()
+
+    return new_records
  
 @compliance_blp.route("/recent/<int:certificate_id>", methods=["GET"])
 @jwt_required()
 @compliance_blp.response(200, ComplianceResponseSchema)
 @compliance_blp.doc(summary="Get recent compliance", description="Get recent compliance.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("Certificate does not belong to the current user"), "404": _err("Certificate not found, or no compliance checks have been run yet")})
 def get_recent_compliance(certificate_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    cert = Certificate.query.get(certificate_id)
+    if not cert:
+        abort(404, message="Certificate not found")
+
+    if cert.user_id != current_user_id:
+        abort(403, message="Certificate does not belong to the current user")
+
+    if not cert.recent_compliance_id:
+        abort(404, message="No compliance checks have been run yet")
+
+    return cert.recent_compliance
  
 @compliance_blp.route("/<int:compliance_id>", methods=["GET"])
 @jwt_required()
 @compliance_blp.response(200, ComplianceResponseSchema)
 @compliance_blp.doc(summary="Get compliance", description="Get compliance.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("Compliance record does not belong to the current user"), "404": _err("Compliance record not found")})
 def get_compliance(compliance_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    compliance = Compliance.query.get(compliance_id)
+    if not compliance:
+        abort(404, message="Compliance record not found")
+
+    cert = Certificate.query.get(compliance.certificate_id)
+    if cert.user_id != current_user_id:
+        abort(403, message="Compliance record does not belong to the current user")
+
+    return compliance
  
 @compliance_blp.route("/policy/<int:compliance_id>", methods=["GET"])
 @jwt_required()
 @compliance_blp.response(200, PolicyResponseSchema)
 @compliance_blp.doc(summary="Get compliance policy", description="Get compliance policy.", security=_jwt_security, responses={"401": _err("Missing or invalid token"), "403": _err("Compliance record does not belong to the current user"), "404": _err("Compliance record not found")})
 def get_compliance_policy(compliance_id):
-    pass
+    current_user_id = int(get_jwt_identity())
+
+    compliance = Compliance.query.get(compliance_id)
+    if not compliance:
+        abort(404, message="Compliance record not found")
+
+    cert = Certificate.query.get(compliance.certificate_id)
+    if cert.user_id != current_user_id:
+        abort(403, message="Compliance record does not belong to the current user")
+
+    return compliance.policy
  
  
 # Register blueprint

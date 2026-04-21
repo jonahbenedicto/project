@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
   AlertCircle, ShieldCheck, ShieldOff, ChevronLeft, ChevronDown, ChevronUp, Star,
-  Loader2, Calendar, ScrollText, CheckCircle2, XCircle,
+  Loader2, Calendar, ScrollText,
   Network, Key, Lock, Globe, Building, Clock, ShieldAlert,
 } from "lucide-react"
 
@@ -25,6 +25,7 @@ interface Consent {
 interface Policy {
   policy_id: number
   organisation_id: number
+  name: string
   created_at: string
   valid_protocols: string[]
   valid_key_exchanges: string[]
@@ -73,7 +74,7 @@ function TagList({ icon: Icon, label, values }: { icon: React.ElementType; label
       </div>
       <div className="flex flex-wrap justify-end gap-1">
         {values.length > 0 ? values.map(v => (
-          <Badge key={v} variant="secondary" className="text-xs font-mono font-normal px-1.5 py-0">{v}</Badge>
+          <Badge key={v} variant="outline" className="text-xs font-normal px-1.5 py-0 text-muted-foreground">{v}</Badge>
         )) : (
           <Badge variant="outline" className="text-xs font-normal px-1.5 py-0 text-muted-foreground">Any</Badge>
         )}
@@ -85,13 +86,13 @@ function TagList({ icon: Icon, label, values }: { icon: React.ElementType; label
 function BoolRow({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: boolean }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <div className="flex items-center gap-1.5 text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-muted-foreground shrink-0">
         <Icon className="h-3.5 w-3.5" />
         <span className="text-xs">{label}</span>
       </div>
-      {value
-        ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-        : <XCircle className="h-3.5 w-3.5 text-destructive shrink-0" />}
+      <Badge variant={value ? "default" : "outline"} className="text-xs font-normal px-1.5 py-0 text-muted-foreground">
+        {value ? "Required" : "Optional"}
+      </Badge>
     </div>
   )
 }
@@ -101,8 +102,8 @@ function PolicyDetail({ policy }: { policy: Policy }) {
     <div className="flex flex-col gap-3">
       <InfoRow
         icon={ScrollText}
-        label="Policy ID"
-        value={<span className="font-mono">#{policy.policy_id}</span>}
+        label="Name"
+        value={policy.name}
       />
       <InfoRow
         icon={Calendar}
@@ -111,16 +112,16 @@ function PolicyDetail({ policy }: { policy: Policy }) {
       />
       <TagList icon={Network}   label="Protocols"            values={policy.valid_protocols} />
       <TagList icon={Key}       label="Key exchanges"        values={policy.valid_key_exchanges} />
-      <TagList icon={Key}       label="KE groups"            values={policy.valid_key_exchange_groups} />
+      <TagList icon={Key}       label="Key exchange groups"            values={policy.valid_key_exchange_groups} />
       <TagList icon={Lock}      label="Ciphers"              values={policy.valid_ciphers} />
-      <TagList icon={Lock}      label="MACs"                 values={policy.valid_macs} />
+      <TagList icon={Lock}      label="Message authentication codes"                 values={policy.valid_macs} />
       <TagList icon={Globe}     label="Domains"              values={policy.valid_domains} />
       <TagList icon={Building}  label="Issuers"              values={policy.valid_issuers} />
-      <InfoRow icon={Clock}     label="Min days to expiry"   value={`${policy.min_days_until_expiration} days`} />
-      <InfoRow icon={Clock}     label="Max days since issue" value={`${policy.max_days_since_issuance} days`} />
-      <BoolRow icon={ShieldAlert} label="Require SCT list"               value={policy.require_signed_certificate_timestamp_list} />
-      <BoolRow icon={ShieldAlert} label="Require CT compliance"          value={policy.require_certificate_transparency_compliance} />
-      <BoolRow icon={ShieldAlert} label="Require encrypted client hello" value={policy.require_encrypted_client_hello} />
+      <InfoRow icon={Clock}     label="Min days until expiration"   value={`${policy.min_days_until_expiration} days`} />
+      <InfoRow icon={Clock}     label="Max days since issuance" value={`${policy.max_days_since_issuance} days`} />
+      <BoolRow icon={ShieldAlert} label="Signed certificate timestamp list"               value={policy.require_signed_certificate_timestamp_list} />
+      <BoolRow icon={ShieldAlert} label="Certificate transparency compliance"          value={policy.require_certificate_transparency_compliance} />
+      <BoolRow icon={ShieldAlert} label="Encrypted client hello" value={policy.require_encrypted_client_hello} />
     </div>
   )
 }
@@ -190,8 +191,9 @@ function ConsentActions({
         </Button>
       ) : (
         <Button
+          variant="outline"
           size="sm"
-          className="w-full gap-2"
+          className="w-full gap-2 text-green-600 hover:text-green-700"
           disabled={acting}
           onClick={e => { e.stopPropagation(); onGive(policyId) }}
         >
@@ -221,14 +223,14 @@ function ActivePolicyCard({
   return (
     <div className="rounded-md border overflow-hidden">
       <div className="flex items-center justify-between gap-2 px-2.5 py-2">
-        <span className="text-xs font-mono text-muted-foreground">#{policy.policy_id}</span>
+        <span className="text-xs font-semibold">{policy.name}</span>
         <div className="flex items-center gap-1.5">
           <Badge variant="default" className="gap-1 text-xs px-1.5 py-0">
             <Star className="h-2 w-2" />Active
           </Badge>
           <Badge
             variant={hasConsent ? "default" : hasRevoked ? "destructive" : "outline"}
-            className="text-xs px-1.5 py-0"
+            className={`text-xs px-1.5 py-0 ${hasConsent ? "bg-green-600 hover:bg-green-700 text-white border-transparent" : ""}`}
           >
             {hasConsent ? "Consented" : hasRevoked ? "Revoked" : "No consent"}
           </Badge>
@@ -270,11 +272,11 @@ function CollapsibleConsentPolicy({
         className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left hover:bg-muted/30 transition-colors"
         onClick={() => setOpen(v => !v)}
       >
-        <span className="text-xs font-mono text-muted-foreground">#{policy.policy_id}</span>
+        <span className="text-xs font-semibold">{policy.name}</span>
         <div className="flex items-center gap-1.5 shrink-0">
           <Badge
             variant={hasConsent ? "default" : hasRevoked ? "destructive" : "outline"}
-            className="text-xs px-1.5 py-0"
+            className={`text-xs px-1.5 py-0 ${hasConsent ? "bg-green-600 hover:bg-green-700 text-white border-transparent" : ""}`}
           >
             {hasConsent ? "Consented" : hasRevoked ? "Revoked" : "No consent"}
           </Badge>

@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   AlertCircle, ScrollText, ChevronDown, ChevronUp, Star,
   ChevronLeft, Loader2, Calendar, Plus, X,
-  Network, Key, Lock, Globe, Building, Clock, ShieldAlert, CheckCircle2, XCircle,
+  Network, Key, Lock, Globe, Building, Clock, ShieldAlert
 } from "lucide-react"
 
 const API_BASE = "http://127.0.0.1:5000"
@@ -27,6 +27,7 @@ interface Organisation {
 interface Policy {
   policy_id: number
   organisation_id: number
+  name: string
   created_at: string
   valid_protocols: string[]
   valid_key_exchanges: string[]
@@ -45,6 +46,7 @@ interface Policy {
 type Role = "owner" | "admin" | "member" | null
 
 const emptyPolicyForm = {
+  name: "",
   valid_protocols:           [] as string[],
   valid_key_exchanges:       [] as string[],
   valid_key_exchange_groups: [] as string[],
@@ -136,7 +138,7 @@ function TagList({ icon: Icon, label, values }: { icon: React.ElementType; label
       </div>
       <div className="flex flex-wrap justify-end gap-1">
         {values.length > 0 ? values.map(v => (
-          <Badge key={v} variant="secondary" className="text-xs font-mono font-normal px-1.5 py-0">{v}</Badge>
+          <Badge key={v} variant="outline" className="text-xs font-normal px-1.5 py-0 text-muted-foreground">{v}</Badge>
         )) : (
           <Badge variant="outline" className="text-xs font-normal px-1.5 py-0 text-muted-foreground">Any</Badge>
         )}
@@ -148,13 +150,13 @@ function TagList({ icon: Icon, label, values }: { icon: React.ElementType; label
 function BoolRow({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: boolean }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <div className="flex items-center gap-1.5 text-muted-foreground">
+      <div className="flex items-center gap-1.5 text-muted-foreground shrink-0">
         <Icon className="h-3.5 w-3.5" />
         <span className="text-xs">{label}</span>
       </div>
-      {value
-        ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-        : <XCircle className="h-3.5 w-3.5 text-destructive shrink-0" />}
+      <Badge variant={value ? "default" : "outline"} className="text-xs font-normal px-1.5 py-0 text-muted-foreground">
+        {value ? "Required" : "Optional"}
+      </Badge>
     </div>
   )
 }
@@ -166,8 +168,8 @@ function PolicyDetail({ policy }: { policy: Policy }) {
     <div className="flex flex-col gap-3">
       <InfoRow
         icon={ScrollText}
-        label="Policy ID"
-        value={<span className="font-mono">#{policy.policy_id}</span>}
+        label="Name"
+        value={policy.name}
       />
       <InfoRow
         icon={Calendar}
@@ -176,16 +178,16 @@ function PolicyDetail({ policy }: { policy: Policy }) {
       />
       <TagList icon={Network}   label="Protocols"          values={policy.valid_protocols} />
       <TagList icon={Key}       label="Key exchanges"      values={policy.valid_key_exchanges} />
-      <TagList icon={Key}       label="KE groups"          values={policy.valid_key_exchange_groups} />
+      <TagList icon={Key}       label="Key exchange groups"          values={policy.valid_key_exchange_groups} />
       <TagList icon={Lock}      label="Ciphers"            values={policy.valid_ciphers} />
       <TagList icon={Lock}      label="MACs"               values={policy.valid_macs} />
       <TagList icon={Globe}     label="Domains"            values={policy.valid_domains} />
       <TagList icon={Building}  label="Issuers"            values={policy.valid_issuers} />
-      <InfoRow icon={Clock}     label="Min days to expiry"   value={`${policy.min_days_until_expiration} days`} />
-      <InfoRow icon={Clock}     label="Max days since issue"  value={`${policy.max_days_since_issuance} days`} />
-      <BoolRow icon={ShieldAlert} label="Require SCT list"               value={policy.require_signed_certificate_timestamp_list} />
-      <BoolRow icon={ShieldAlert} label="Require CT compliance"          value={policy.require_certificate_transparency_compliance} />
-      <BoolRow icon={ShieldAlert} label="Require encrypted client hello"  value={policy.require_encrypted_client_hello} />
+      <InfoRow icon={Clock}     label="Min days until expiration"   value={`${policy.min_days_until_expiration} days`} />
+      <InfoRow icon={Clock}     label="Max days since issuance"  value={`${policy.max_days_since_issuance} days`} />
+      <BoolRow icon={ShieldAlert} label="Signed certificate timestamp list"               value={policy.require_signed_certificate_timestamp_list} />
+      <BoolRow icon={ShieldAlert} label="Certificate transparency compliance"          value={policy.require_certificate_transparency_compliance} />
+      <BoolRow icon={ShieldAlert} label="Encrypted client hello"  value={policy.require_encrypted_client_hello} />
     </div>
   )
 }
@@ -209,7 +211,7 @@ function CollapsiblePolicy({
         onClick={() => setOpen(v => !v)}
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs font-mono text-muted-foreground">#{policy.policy_id}</span>
+          <span className="text-xs font-semibold">{policy.name}</span>
           {isActive && <Badge variant="default" className="gap-1 text-xs px-1.5 py-0"><Star className="h-2 w-2" />Active</Badge>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -295,6 +297,7 @@ export default function PolicyPage({
     setCreatePolicyError("")
     setCreatingPolicy(true)
     const body = {
+      name:                      policyForm.name,
       valid_protocols:           policyForm.valid_protocols,
       valid_key_exchanges:       policyForm.valid_key_exchanges,
       valid_key_exchange_groups: policyForm.valid_key_exchange_groups,
@@ -382,7 +385,7 @@ export default function PolicyPage({
               {activePolicy ? (
                 <div className="rounded-md border overflow-hidden">
                   <div className="flex items-center justify-between gap-2 px-2.5 py-2">
-                    <span className="text-xs font-mono text-muted-foreground">#{activePolicy.policy_id}</span>
+                    <span className="text-xs font-semibold">{activePolicy.name}</span>
                     <Badge variant="default" className="gap-1 text-xs px-1.5 py-0"><Star className="h-2 w-2" />Active</Badge>
                   </div>
                   <div className="border-t px-2.5 py-2.5">
@@ -433,13 +436,21 @@ export default function PolicyPage({
                       <span className="text-xs font-mono text-muted-foreground">New</span>
                     </div>
                     <div className="border-t px-2.5 py-2.5 flex flex-col gap-2">
+                      <div className="grid gap-1">
+                        <Label className="text-xs text-muted-foreground">Name</Label>
+                        <Input
+                          className="h-8 text-xs"
+                          value={policyForm.name}
+                          onChange={e => setPolicyForm(f => ({ ...f, name: e.target.value }))}
+                        />
+                      </div>
                       {(
                         [
                           ["valid_protocols",           "Protocols"],
                           ["valid_key_exchanges",       "Key exchanges"],
                           ["valid_key_exchange_groups", "Key exchange groups"],
                           ["valid_ciphers",             "Ciphers"],
-                          ["valid_macs",                "MACs"],
+                          ["valid_macs",                "Message authentication codes"],
                           ["valid_domains",             "Domains"],
                           ["valid_issuers",             "Issuers"],
                         ] as [keyof typeof emptyPolicyForm, string][]
@@ -455,7 +466,7 @@ export default function PolicyPage({
                       ))}
 
                       <div className="grid gap-1">
-                        <Label className="text-xs text-muted-foreground">Min expiry</Label>
+                        <Label className="text-xs text-muted-foreground">Min days until expiration</Label>
                         <Input
                           type="number"
                           className="h-8 text-xs"
@@ -464,7 +475,7 @@ export default function PolicyPage({
                         />
                       </div>
                       <div className="grid gap-1">
-                        <Label className="text-xs text-muted-foreground">Max issuance</Label>
+                        <Label className="text-xs text-muted-foreground">Max days since issuance</Label>
                         <Input
                           type="number"
                           className="h-8 text-xs"
@@ -491,7 +502,7 @@ export default function PolicyPage({
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="true" className="text-xs">Required</SelectItem>
-                              <SelectItem value="false" className="text-xs">Not required</SelectItem>
+                              <SelectItem value="false" className="text-xs">Optional</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
